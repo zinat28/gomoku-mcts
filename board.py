@@ -49,7 +49,7 @@ class Board:
                     return True
             return False
     def __str__(self):
-        sym = {EMPTY: ".", BLACK: "x", WHITE: "0"}
+        sym = {EMPTY: " .", BLACK: " x", WHITE: "0"}
         header = "  "+" ".join(f"{c:2d}" for c in range(SIZE))
         rows = [f"{r:2d}" + " ".join(f"{sym[self.cells[r*SIZE+c]]}"for c in range(SIZE))
                 for r in range(SIZE)]
