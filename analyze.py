@@ -1,4 +1,4 @@
-import csv
+import csv, os
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -9,37 +9,56 @@ def read(path):
         return list(csv.DictReader(f))
 
 
-seq = {r["position"]: float(r["mean_time_s"]) for r in read("results/sequential.csv")}
-mpi = {}
-for r in read("results/mpi.csv"):
-    mpi[(int(r["p"]), r["position"])] = float(r["mean_time_s"])   # last run wins
+def load(path):
+    d = {}
+    for r in read(path):                      # last run wins
+        d[(int(r["p"]), r["position"])] = (float(r["mean_time_s"]), float(r["std_s"]), int(r["n_sim"]))
+    return d
 
-ps = sorted({p for p, _ in mpi})
-rows = [["position", "p", "Tp_s", "Sp", "Ep_percent", "KarpFlatt"]]
 
-print(f"{'position':8s} {'p':>3s} {'Tp(s)':>8s} {'Sp':>6s} {'Ep(%)':>7s} {'KF':>7s}")
-for pos, t1 in seq.items():
-    for p in ps:
-        tp = mpi[(p, pos)]
-        sp = t1 / tp
-        ep = sp / p * 100
-        kf = (1 / sp - 1 / p) / (1 - 1 / p) if p > 1 else float("nan")
-        print(f"{pos:8s} {p:3d} {tp:8.3f} {sp:6.2f} {ep:7.1f} {kf:7.3f}")
-        rows.append([pos, p, round(tp, 4), round(sp, 3), round(ep, 1), round(kf, 4)])
+seq = {r["position"]: (float(r["mean_time_s"]), float(r["std_s"]), int(r["n_sim"]))
+       for r in read("results/sequential.csv")}
+methods = {name: load(path) for name, path in
+           (("MPI", "results/mpi.csv"), ("multiprocessing", "results/mp.csv"))
+           if os.path.exists(path)}
 
-with open("results/summary.csv", "w", newline="") as f:
+header = ["method", "position", "p", "Tp_s", "std_s", "NPS", "Sp", "Ep_percent",
+          "KarpFlatt_ep", "Amdahl_bound", "Latency_ms"]
+rows = [header]
+
+
+def add(method, pos, p, tp, sd, n, t1):
+    sp = t1 / tp
+    ep = sp / p * 100
+    if p > 1:
+        kf = (1 / sp - 1 / p) / (1 - 1 / p)
+        kf_s = round(kf, 4)
+        bound = round(1 / kf, 1) if kf > 0 else "NA"
+    else:
+        kf_s, bound = "NA", "NA"
+    rows.append([method, pos, p, round(tp, 4), round(sd, 4), round(n / tp),
+                 round(sp, 3), round(ep, 1), kf_s, bound, round(tp * 1000, 1)])
+
+
+for pos, (t1, sd, n) in seq.items():
+    add("sequential", pos, 1, t1, sd, n, t1)
+    for name, data in methods.items():
+        for p in sorted({p for p, _ in data}):
+            tp, sd2, n2 = data[(p, pos)]
+            add(name, pos, p, tp, sd2, n2, t1)
+
+with open("results/master.csv", "w", newline="") as f:
     csv.writer(f).writerows(rows)
+for r in rows:
+    print("{:16s}{:8s}{:>4}{:>9}{:>8}{:>8}{:>7}{:>8}{:>8}{:>8}{:>9}".format(*map(str, r)))
 
-# chart: speedup vs processes, with the ideal line
 plt.figure(figsize=(6, 4))
-for pos, t1 in seq.items():
-    plt.plot(ps, [t1 / mpi[(p, pos)] for p in ps], marker="o", label=pos)
-plt.plot(ps, ps, "k--", label="ideal")
-plt.xlabel("MPI processes (p)")
-plt.ylabel("Speedup Sp = T1 / Tp")
-plt.title("Root-parallel MCTS speedup")
-plt.legend()
-plt.grid(True)
-plt.tight_layout()
+for name, data in methods.items():
+    ps = sorted({p for p, _ in data})
+    avg = [sum(seq[pos][0] / data[(p, pos)][0] for pos in seq) / len(seq) for p in ps]
+    plt.plot(ps, avg, marker="o", label=name)
+    plt.plot(ps, ps, "k--", label="ideal") if name == list(methods)[0] else None
+plt.xlabel("workers (p)"); plt.ylabel("average speedup Sp")
+plt.title("MPI vs multiprocessing"); plt.legend(); plt.grid(True); plt.tight_layout()
 plt.savefig("results/speedup.png", dpi=150)
-print("Saved results/summary.csv and results/speedup.png")
+print("Saved results/master.csv and results/speedup.png")
